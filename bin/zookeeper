@@ -1,0 +1,88 @@
+#!/bin/bash
+
+trap "exit 0" TERM
+
+[ -z "$ZOOCFG" ] && ZOOCFG="/etc/zookeeper/conf/zoo.cfg"
+
+[ -z "$ZOO_DATADIR" ] && ZOO_DATADIR=/opt/zookeeper/data
+
+ZOOBINDIR="$( cd "$(dirname "$0")" ; pwd -P )"
+
+export PATH=$PATH:$ZOOBINDIR
+
+for i in "$ZOOBINDIR"/../src/java/lib/*.jar
+do
+    CLASSPATH="$i:$CLASSPATH"
+done
+
+for i in "$ZOOBINDIR"/../zookeeper-*.jar
+do
+  CLASSPATH="$i:$CLASSPATH"
+done
+LIBPATH=("${ZOOBINDIR}"/../lib/*.jar)
+
+for i in "${LIBPATH[@]}"
+do
+    CLASSPATH="$i:$CLASSPATH"
+done
+
+for d in "$ZOOBINDIR"/../build/lib/*.jar
+do
+   CLASSPATH="$d:$CLASSPATH"
+done
+
+#remove trailing slash
+CLASSPATH=$(echo "$CLASSPATH"|sed -e 's/:$//' -e 's/::/:/')
+
+CLASSPATH="$ZOOBINDIR/../build/classes:$CLASSPATH:/conf/"
+
+# default heap for zookeeper server
+[ -z "${ZK_SERVER_HEAP}" ] && ZK_SERVER_HEAP=256
+
+if [ ! -z "${JMX_ENABLED}" ]; then
+  [ -z "${JMX_PORT}" ] && JMX_PORT=7080
+  [ -z "${JMX_SSL}" ] && JMX_SSL=false
+  [ -z "${JMX_LOG}" ] && JMX_LOG=false
+  ZOOMAIN="-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.port=${JMX_PORT} -Dcom.sun.management.jmxremote.authenticate=${JMX_AUTH} -Dcom.sun.management.jmxremote.ssl=${JMX_SSL} -Dzookeeper.jmx.log4j.disable=${JMX_LOG} org.apache.zookeeper.server.quorum.QuorumPeerMain"
+else
+  ZOOMAIN="org.apache.zookeeper.server.quorum.QuorumPeerMain"
+fi
+
+SERVER_JVMFLAGS="-Xmx${ZK_SERVER_HEAP}m $JVMFLAGS"
+
+
+# make the data dir if it doesn't exist
+[ -d "$ZOO_DATADIR" ] || mkdir -p "$ZOO_DATADIR"
+
+ZOOPIDFILE="$ZOO_DATADIR/zookeeper_server.pid"
+
+[ -z $PROMETHEUS_PORT ] && PROMETHEUS_PORT=7070
+
+PROMETHEUS_CMD=""
+
+if [ -z ${WITHOUT_PROMETHEUS} ]; then
+  [ -z "${PROMETHEUS_CONFIG}" ] && PROMETHEUS_CONFIG=/etc/zookeeper/conf/prometheus.yaml
+  PROMETHEUS_CMD="-javaagent:${ZOOBINDIR}/../src/java/prometheus/jmx_prometheus_javaagent-0.11.0.jar=${PROMETHEUS_PORT}:${PROMETHEUS_CONFIG}"
+fi
+
+ZOO_CMD=$JAVA_HOME/bin/java
+MEMORY_OPTS='-XX:+CrashOnOutOfMemoryError'
+
+[ ! -z "${ASYNC_HOOK}" ] && [ -x "${ASYNC_HOOK}" ] && ${ASYNC_HOOK} 2>&1 &
+
+[ ! -z "${PREHOOK}" ] && [ -x "${PREHOOK}" ] && ${PREHOOK}
+
+CMD=$(cat<<EOF
+  ${ZOO_CMD} \
+  ${MEMORY_OPTS} \
+  ${PROMETHEUS_CMD} \
+  ${ZOO_EXTRA_ARGS} \
+  -cp $CLASSPATH $SERVER_JVMFLAGS $ZOOMAIN $ZOOCFG
+EOF
+);
+
+#Lets see the command for debugging
+[ ! -z ${DEBUG} ] && echo -e "${CMD}"
+
+#Now run it
+${CMD}

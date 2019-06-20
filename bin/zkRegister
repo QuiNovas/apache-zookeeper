@@ -1,0 +1,120 @@
+#!/bin/bash
+
+export ZK_PATH=/opt/zookeeper
+
+. /etc/zookeeper/zookeeper.env
+
+while [ -z ${MYID} ]; do
+  export MYID=$(cat ${ZK_PATH}/data/myid);
+  sleep 1
+done
+
+echo "### My ID is $MYID ###"
+
+cd ${ZK_PATH}/bin
+
+function _clientExec(){
+  ./zk-client ${1}<<EOF
+  ${2}
+EOF
+}
+
+CONFIG_DIR=$(dirname $ZOOCFG)
+
+#Wait on the local server to come up
+echo "### Waiting on local server to become ready ###"
+while [ "$(echo ruok | nc localhost 2181)" != "imok" ]; do
+  echo 'Waiting on server to become ready'
+  sleep 2;
+done
+
+#Get the first servername from the current config
+while [ -z ${FIRST_SERVER} ]; do
+  echo "### Looking for first server ###"
+  for S in $(egrep -h '^server\.[0-9]*=' ${CONFIG_DIR}/zoo.cf* | grep -v "observer" | sed -r 's/(^server\.[0-9]*=)|(:.*)//g' | sort | uniq); do
+    echo ${S}
+    if [ "$(echo ruok | nc ${S} 2181)" = "imok" ]; then
+      FIRST_SERVER=${S}
+      break
+    fi
+    sleep 2
+  done
+done
+
+#Wait on a server to come up so we can get their config
+while [ "$(echo ruok | nc ${FIRST_SERVER} 2181)" != "imok" ]; do
+  echo "Waiting on first server in config ( ${FIRST_SERVER} ) to come up......."
+  sleep 2
+done
+
+while [ -z "${ALL_SERVERS}" ]; do
+  echo "### Waiting to retreive list of servers in ensemble ###"
+  ALL_SERVERS=$(_clientExec ${FIRST_SERVER} config | egrep '^server\.[0-9]*=' | sed -r 's/(^server\.[0-9]*=)|(:.*)//g')
+  sleep 2
+done
+
+ENSEMBLE=$(egrep -v "observer" <<<${ALL_SERVERS} | sed -r 's/(^server\.[0-9]*=)|(:.*)//g')
+
+echo "$ENSEMBLE"
+
+#Exit if we are already in the ensemble
+if grep -q $(hostname -f)<<<${ALL_SERVERS}; then
+  echo "###########################  Server already part of the ensemble. Exiting ASYNC_HOOK  ###############################"
+  exit 0
+fi
+
+echo "${ENSEMBLE}"
+
+while [ -z "${LEADER}" ];do
+  echo "## Searching for leader ##"
+  for S in ${ENSEMBLE}; do
+    MODE=$(echo stat | nc ${S} 2181 | egrep '^Mode:\s?(leader|follower|standalone)' | sed -r 's/Mode:\s?//')
+    if [ "${MODE}" = "leader" ]; then
+      echo "### Found Leader ###"
+      export LEADER=${S}
+      break
+    fi
+    sleep 1
+  done
+done
+
+echo "######################### LEADER IS ${LEADER} ############################"
+
+
+#Create a key on the leader that we will check so we know when we are synced
+./client.sh ${LEADER}<<EOF
+  create /SERVERS
+  create /SERVERS/${MYID} "synced"
+EOF
+
+if ! _clientExec localhost config | egrep -q "^server.${MYID}=$(hostname -f):2888:3888:observer;2181"; then
+  echo "Cannot find myself in my own config. Adding myself through the reconfig API"
+  _clientExec localhost "reconfig -add server.${MYID}=$(hostname -f):2888:3888:observer;2181"
+fi
+
+#Get the client synced up with the leader. This is a temporary config that won't actually add the new server to the cluster. Just let it operate to sync
+_clientExec localhost "sync /"
+
+#The key we set before the sync should be the last thing that the leader returns from the sync, aside from any commits that happened since we started this process
+while  ! _clientExec localhost "get /SERVERS/${MYID}" | grep -v '] INFO' | egrep -q '^synced$'; do
+  echo "Waiting on sync ..."
+  sleep 2
+done
+
+#Set node to null
+_cliExec ${LEADER} "set /SERVERS/${MYID} null"
+
+# For peers that will only ever be observers
+if [ "${PEER_TYPE}" = "observer" ]; then
+  #Now actually add the member to the ensemble
+  ./client.sh ${FIRST_SERVER}<<EOF
+    reconfig -add server.${MYID}=$(hostname -f):2888:3888:observer;2181
+EOF
+fi
+
+if [ "${PEER_TYPE}" = "participant" ]; then
+  #Now actually add the member to the ensemble
+  ./client.sh ${FIRST_SERVER}<<EOF
+    reconfig -add server.${MYID}=$(hostname -f):2888:3888:participant;2181
+EOF
+fi

@@ -1,0 +1,5 @@
+startDelaySeconds: 0
+hostPort: 127.0.0.1:7080
+ssl: false
+lowercaseOutputName: false
+lowercaseOutputLabelNames: false

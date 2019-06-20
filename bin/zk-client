@@ -1,0 +1,48 @@
+#!/bin/bash
+
+[ -z "${ZK_HOME}" ] && ZK_HOME=/opt/zookeeper
+
+[ -z "${ZK_CONFIG_DIR}" ] && ZK_CONFIG_DIR=/etc/zookeeper
+
+ZOO_DATADIR=${ZK_HOME}/data
+
+ZOOBINDIR="$( cd "$(dirname "$0")" ; pwd -P )"
+
+export PATH=$PATH:$ZK_HOME/bin
+
+for i in "$ZOOBINDIR"/../src/java/lib/*.jar
+do
+    CLASSPATH="$i:$CLASSPATH"
+done
+
+for i in "$ZOOBINDIR"/../zookeeper-*.jar
+do
+  CLASSPATH="$i:$CLASSPATH"
+done
+LIBPATH=("${ZOOBINDIR}"/../lib/*.jar)
+
+for i in "${LIBPATH[@]}"
+do
+    CLASSPATH="$i:$CLASSPATH"
+done
+
+for d in "$ZOOBINDIR"/../build/lib/*.jar
+do
+   CLASSPATH="$d:$CLASSPATH"
+done
+
+
+#remove trailing slash
+CLASSPATH=$(echo "$CLASSPATH"|sed -e 's/:$//' -e 's/::/:/')
+
+CLASSPATH="$ZOOBINDIR/../build/classes:$CLASSPATH:${ZK_CONFIG_DIR}:${ZK_CONFIG_DIR}/conf"
+
+ZOO_CMD=$JAVA_HOME/bin/java
+
+SERVER=${1}
+[ -z "${SERVER}" ] && SERVER="127.0.0.1:2181"
+
+$ZOO_CMD -cp $CLASSPATH \
+org.apache.zookeeper.ZooKeeperMain -server ${SERVER}
+
+exit 0
